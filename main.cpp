@@ -1,4 +1,5 @@
 #include<stdio.h>
+#include<vector>
 #include<windows.h>
 /*
 利用QSV实现Intel硬件解码。调用的接口是Intel Media SDK提供的接口。
@@ -63,12 +64,69 @@ BOOL InitVideoCodec5DLL()
 
 	return TRUE;
 }
+typedef struct MyStruct
+{
+	mfxFrameSurface1 *psur;
+	bool		b;
+
+}MyStruct;
+typedef struct MyOutSuface
+{
+	mfxFrameSurface1 *outsurf;
+	mfxSyncPoint *sync;
+
+}MyOutSuface;
+typedef std::vector<MyOutSuface *>g_veOutSurface;
+typedef std::vector<MyStruct*> g_veFrameSurface;
+g_veOutSurface	 m_veOutSurface;
+
 #define QSV_VERSION_MAJOR 1
 #define QSV_VERSION_MINOR 1
 
-mfxSession session = nullptr;
+class CSuface {
+public:
+	bool InitMxfSession();
+	bool AllocSuface(int iW, int iH, int iPitch);
+	bool InitCodec();
+	int Decode(AVPacket *avpkt,int iOffset);
 
-bool InitMxfSession()
+	MyStruct *GetSuface();
+	void	  ReturnSuface();
+	g_veFrameSurface m_veFrameSurface;
+	//g_veOutSurface	 m_veOutSurface;
+	mfxFrameInfo info;
+	mfxSession session = nullptr;
+};
+bool CSuface::AllocSuface(int iW, int iH, int iPitch)
+{
+	for (int i = 0; i < 10; i++)
+	{
+		MyStruct *s = new MyStruct;
+
+		mfxFrameSurface1 *psur = (mfxFrameSurface1 *)av_malloc(sizeof(mfxFrameSurface1));
+		memset(psur, 0, sizeof(mfxFrameSurface1));
+
+		mfxU8 *Y = (mfxU8 *)new char[iPitch *iH];
+		mfxU8 *UV = (mfxU8 *)new char[iPitch *iH];
+		memset(Y, 0, iPitch * iH);
+		memset(UV, 0, iPitch * iH);
+
+		psur->Data.Y = Y;
+		psur->Data.UV = UV;
+		psur->Info = info;
+		psur->Data.PitchLow = iPitch;
+		psur->Data.Pitch = iPitch;
+
+		s->psur = psur;
+		s->b = false;
+
+		m_veFrameSurface.push_back(s);
+	}
+
+	return true;
+}
+
+bool CSuface::InitMxfSession()
 {
 	mfxIMPL impl = MFX_IMPL_AUTO_ANY;
 	mfxVersion ver = { { QSV_VERSION_MINOR, QSV_VERSION_MAJOR } };
@@ -100,9 +158,7 @@ bool InitMxfSession()
 
 	return true;
 }
-mfxFrameInfo info;
-
-bool InitCodec()
+bool CSuface::InitCodec()
 {
 	mfxVideoParam param = { 0 };
 
@@ -110,9 +166,9 @@ bool InitCodec()
 	param.mfx.FrameInfo.BitDepthLuma = 8;
 	param.mfx.FrameInfo.BitDepthChroma = 8;
 	param.mfx.FrameInfo.Shift = 0;
-	param.mfx.FrameInfo.FourCC = /*MFX_FOURCC_RGB4*/MFX_FOURCC_NV12;
-	param.mfx.FrameInfo.Width =320;
-	param.mfx.FrameInfo.Height = 240;
+	param.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
+	param.mfx.FrameInfo.Width =1280;
+	param.mfx.FrameInfo.Height = 720;
 	param.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
 	param.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
 	param.IOPattern = MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
@@ -125,84 +181,172 @@ bool InitCodec()
 	}
 	info = param.mfx.FrameInfo;
 
+	AllocSuface(1280,720,1280);
+
 	return true;
 }
+#define MSDK_ALIGN32(X) (((mfxU32)((X)+31)) & (~ (mfxU32)31))
+#define MSDK_DEC_WAIT_INTERVAL 300000
+
+void CSuface::ReturnSuface()
+{
+	std::vector<MyStruct*>::iterator iter;
+	for (iter = m_veFrameSurface.begin(); iter != m_veFrameSurface.end(); iter++)
+	{
+		if ((*iter)->b && !(*iter)->psur->Data.Locked)
+		{
+			(*iter)->b = false;
+			memset((*iter)->psur->Data.Y,0,(*iter)->psur->Data.Pitch *(*iter)->psur->Info.Height);
+			memset((*iter)->psur->Data.UV, 0, (*iter)->psur->Data.Pitch *(*iter)->psur->Info.Height);
+		}
+	}
+}
+MyStruct *CSuface::GetSuface()
+{
+	ReturnSuface();
+
+	std::vector<MyStruct*>::iterator iter;
+	for (iter = m_veFrameSurface.begin(); iter != m_veFrameSurface.end(); iter++)
+	{
+		if (!(*iter)->b && !(*iter)->psur->Data.Locked)
+		{
+			return *iter;
+		}
+	}
+
+	MyStruct *s = new MyStruct;
+
+	mfxFrameSurface1 *psur = (mfxFrameSurface1 *)av_malloc(sizeof(mfxFrameSurface1));
+	memset(psur, 0, sizeof(mfxFrameSurface1));
+
+	mfxU8 *Y = (mfxU8 *)new char[1280 *720];
+	mfxU8 *UV = (mfxU8 *)new char[1280 * 720];
+	memset(Y, 0, 1280 * 720);
+	memset(UV, 0, 1280 * 720);
+
+	psur->Data.Y = Y;
+	psur->Data.UV = UV;
+	psur->Info = info;
+	psur->Data.PitchLow = 1280;
+	psur->Data.Pitch = 1280;
+
+	s->psur = psur;
+	s->b = false;
+
+	m_veFrameSurface.push_back(s);
+
+	return s;
+}
 //解码出的数据为NV12，也就是YUV420，排列方式为Y Y Y Y.... U V U V U V，两个Planer
-bool Decode(AVPacket *avpkt)
+int CSuface::Decode(AVPacket *avpkt,int iOffset)
 {
 	mfxFrameSurface1 *insurf = nullptr;
 	mfxFrameSurface1 *outsurf = nullptr;
+	
 	mfxSyncPoint *sync = nullptr;
-	mfxBitstream bs = { { { 0 } } };
+	MyStruct *st = nullptr;
 	int ret;
-
-	if (avpkt->size) {
-		bs.Data = avpkt->data;
-		bs.DataLength = avpkt->size;
-		bs.MaxLength = bs.DataLength;
-		bs.TimeStamp = avpkt->pts;
-	}
+	int iSize = 0;
 
 	sync = (mfxSyncPoint *)av_malloc(sizeof(*sync));
 	if (sync)
 		memset(sync, 0, sizeof(*sync));
 
 	do {
+		mfxBitstream bs = { { { 0 } } };
 
-	
-	mfxU8 *y = (mfxU8 *)new char[354799];//长度为Pitch 乘以高度，Pitch需要32bit对其
-	mfxU8 *uv = (mfxU8*)new char[354799];
-	memset(y,0,354799);
-	memset(uv, 0, 354799);
+		if (avpkt->size) {
+			bs.Data = avpkt->data + iOffset;
+			bs.DataLength = avpkt->size - iOffset;
+			bs.MaxLength = bs.DataLength;
+			bs.TimeStamp = avpkt->pts;
+		}
+		st = GetSuface();
+		insurf = st->psur;
 
-	insurf = new mfxFrameSurface1;
-	memset(insurf, 0, sizeof(mfxFrameSurface1));
+		ret = MFXVideoDECODE_DecodeFrameAsync(session, &bs,//需要通过bs的成员判断是否操作完成，存在一帧数据多次调用。而且需要每次都要新的bs局部对象。不然会提示参数被修改
+			insurf, &outsurf, sync);
 
-	insurf->Info = info;
-	insurf->Data.PitchLow = 736;	//32字节对齐。
-	insurf->Data.Y =y;
-	insurf->Data.UV = uv;
-
-
-	ret = MFXVideoDECODE_DecodeFrameAsync(session, &bs,//需要通过bs的成员判断是否操作完成，存在一帧数据多次调用。而且需要每次都要新的bs局部对象。不然会提示参数被修改
-		insurf, &outsurf, sync);
+		iSize = bs.DataLength;
+		if (ret == MFX_WRN_DEVICE_BUSY)
+			Sleep(500);
 
 	} while (ret == MFX_WRN_DEVICE_BUSY || ret == MFX_ERR_MORE_SURFACE);
-	
+	if (ret == MFX_WRN_VIDEO_PARAM_CHANGED)
+	{
+		ret = MFX_ERR_NONE;
+	}
 	if (*sync)
 	{
-		ig++;
-		do {
-			ret = MFXVideoCORE_SyncOperation(session, *sync, 1000);
-		} while (ret == MFX_WRN_IN_EXECUTION);
-		//outsurf->Data.Y
-		for (int i = 0; i < outsurf->Info.CropH; i++)
-		{
-			fwrite(outsurf->Data.Y+i * outsurf->Data.Pitch, 1, outsurf->Info.CropW, pFile);//y
-		}
-		for (int i = 0; i <  outsurf->Info.CropH / 2; i++)//uv
-		{
-			for (int j = 0; j < outsurf->Info.CropW; j += 2)
-			{
-				fwrite(outsurf->Data.UV + i * outsurf->Data.Pitch + j, 1, 1, pFile);
-			}
-		}
-		for (int i = 0; i < outsurf->Info.CropH / 2; i++)//uv
-		{
-			for (int j = 1; j < outsurf->Info.CropW; j += 2)
-			{
-				fwrite(outsurf->Data.UV + i * outsurf->Data.Pitch + j, 1, 1, pFile);
-			}
-		}
-		if (ig == 20)
-		{
-			fclose(pFile);
-		}
+		MyOutSuface *outs = new MyOutSuface;
+		
+		mfxFrameSurface1 *outsurface = (mfxFrameSurface1 *)malloc(sizeof(mfxFrameSurface1));
+		memcpy(outsurface, outsurf, sizeof(mfxFrameSurface1));
+
+		outs->outsurf = outsurface;
+		outs->sync = sync;
+
+		m_veOutSurface.push_back(outs);
+
+		st->b = true;
+
+		return iSize;
 	}
-	return true;
+	else
+	{
+		av_freep(&sync);
+	}
+	if (m_veOutSurface.size() == 4)
+	{
+		std::vector<MyOutSuface *>::iterator iter = m_veOutSurface.begin();
+		if ((*iter)->sync)
+		{
+			st->b = false;
+			ig++;
+			do {
+				ret = MFXVideoCORE_SyncOperation(session, *(*iter)->sync, MSDK_DEC_WAIT_INTERVAL);
+			} while (ret == MFX_WRN_IN_EXECUTION);
+			//outsurf->Data.Y
+			if (ret == MFX_ERR_NONE)
+			{
+				outsurf = (*iter)->outsurf;
+				for (int i = 0; i < outsurf->Info.CropH; i++)
+				{
+					fwrite(outsurf->Data.Y + i * outsurf->Data.Pitch, 1, outsurf->Info.CropW, pFile);//y
+				}
+				for (int i = 0; i < outsurf->Info.CropH / 2; i++)//uv
+				{
+					for (int j = 0; j < outsurf->Info.CropW; j += 2)
+					{
+						fwrite(outsurf->Data.UV + i * outsurf->Data.Pitch + j, 1, 1, pFile);
+					}
+				}
+				for (int i = 0; i < outsurf->Info.CropH / 2; i++)//uv
+				{
+					for (int j = 1; j < outsurf->Info.CropW; j += 2)
+					{
+						fwrite(outsurf->Data.UV + i * outsurf->Data.Pitch + j, 1, 1, pFile);
+					}
+				}
+			}
+			printf("MFXVideoCORE_SysnOperation=%d\n", ig);
+		}
+		m_veOutSurface.erase(iter);
+	}
+	if (ret == MFX_ERR_MORE_DATA)
+	{
+		st->b = true;
+	}
+
+	return iSize;
 }
 int main(int argc, char *argv[])
 {
+	printf("Begin\n");
+	getchar();
+	printf("End\n");
+	CSuface suface;
+
 	av_register_all();
 	
 	AVFormatContext *pContext = nullptr;
@@ -210,7 +354,7 @@ int main(int argc, char *argv[])
 
 	errno_t er = fopen_s(&pFile, "C:\\quanwei\\D1.yuv", "wb+");
 
-	int ier = avformat_open_input(&pContext, "C:\\quanwei\\q_W320_H240_F33_Q100_ES.264", NULL, NULL);
+	int ier = avformat_open_input(&pContext, "C:\\quanwei\\熊出没·奇幻空间.1080P.HD国语中字 00_11_00-00_12_00~1_W1280_H720_F26_Q100_ES.264", NULL, NULL);
 	if (ier != 0)
 	{
 		printf("avformat_open_input Failed\n");
@@ -228,13 +372,13 @@ int main(int argc, char *argv[])
 	}
 	nVtype = ier;
 
-	bool br = InitMxfSession();
+	bool br = suface.InitMxfSession();
 	if (!br)
 	{
 		printf("");
 	}
 
-	br = InitCodec();
+	br = suface.InitCodec();
 	if (br)
 	{
 		printf("");
@@ -252,18 +396,26 @@ int main(int argc, char *argv[])
 	AVPacket pk;
 
 	int iMark = 1;
-	int iLen = 320*240*3;
+	int iLen = 1280*720*3;
 	char *pData = new char[iLen];
 	memset(pData, 0, iLen);
 
-	int i = 0;
+	int iSize = 0;
+	int iOffset = 0;
 	while (true)
 	{
 		ier = av_read_frame(pContext, &pk);
 		if (ier == 0)
 		{
 			if (pk.stream_index == nVtype) {//Video
-				Decode(&pk);
+				iOffset = 0;
+				do 
+				{
+					iSize = suface.Decode(&pk, iOffset);
+					iOffset = pk.size - iSize;
+				} while (iSize);
+				//iSize = suface.Decode(&pk);
+
 				//memset(pData, 0, iLen);
 				//int ire = decoder_h264_decode(m_pDecode, (char*)pk.data, pk.size, pData, &iLen, &iMark);
 				//if (ire)
@@ -280,9 +432,14 @@ int main(int argc, char *argv[])
 				//}
 			}
 		}
+		if (ier < 0)
+		{
+			break;
+		}
 		av_packet_unref(&pk);
 
 	}
-	
+	fclose(pFile);
+
 	return 0;
 }
