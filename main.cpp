@@ -167,8 +167,10 @@ bool CSuface::InitCodec()
 	param.mfx.FrameInfo.BitDepthChroma = 8;
 	param.mfx.FrameInfo.Shift = 0;
 	param.mfx.FrameInfo.FourCC = MFX_FOURCC_NV12;
-	param.mfx.FrameInfo.Width =1280;
-	param.mfx.FrameInfo.Height = 720;
+	param.mfx.FrameInfo.Width =1280;	//16bit对齐
+	param.mfx.FrameInfo.Height = 720;	//16bit对齐
+	param.mfx.FrameInfo.CropH = 720;// 真实输出的文件高度
+	param.mfx.FrameInfo.CropW = 1280;//真实输出的文件高度
 	param.mfx.FrameInfo.ChromaFormat = MFX_CHROMAFORMAT_YUV420;
 	param.mfx.FrameInfo.PicStruct = MFX_PICSTRUCT_PROGRESSIVE;
 	param.IOPattern = MFX_IOPATTERN_OUT_SYSTEM_MEMORY;
